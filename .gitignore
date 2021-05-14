@@ -1,0 +1,8 @@
+﻿################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
+
+/~dev
+/CoWin.UI
+/CoWin.Core
+/.vs/COWIN/v16
