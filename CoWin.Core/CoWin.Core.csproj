@@ -9,21 +9,24 @@
     <RepositoryUrl>https://github.com/SRvSaha/CoWinVaccineSlotFinder</RepositoryUrl>
     <Company>Open Source</Company>
     <Product>Vaccine Slot Finder</Product>
-    <Description>Windows Application to Fetch the Available Slots &amp; Booking the Appointment Schedule for COVID-19 Vaccination using the Publicly available APISetu APIs from Govt Of India</Description>
-    <Authors>SRvSaha, PSuyog97, priyanka1111</Authors>
+    <Description>Cross-Platform Application to Fetch the Available Slots &amp; Booking the Appointment Schedule for COVID-19 Vaccination India using the Publicly available APISetu APIs</Description>
+    <Authors>SRvSaha, PSuyog97, priyanka1111, iSatishYadav</Authors>
     <Copyright>Saurav Saha</Copyright>
     <PackageLicenseExpression></PackageLicenseExpression>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
-    <Version>3.0.0</Version>
+    <Version>5.0.0</Version>
     <PackageProjectUrl>https://srvsaha.github.io/CoWinVaccineSlotFinder/</PackageProjectUrl>
     <NeutralLanguage></NeutralLanguage>
     <PackageId>VaccineSlotFinder</PackageId>
     <SignAssembly>true</SignAssembly>
-    <PackageReleaseNotes>- Fixed Issue with Captcha Popup Focus; Now whenever Captcha is popped up, focus in on Captcha Form's TextBox, User can right away type the Captch and Press Enter to Submit
-- Added Feature of Searching Slot for Specific Vaccination Center by Name within a PINCode/District
-- Added Feature of Searching for any type of Vacccine or Both; By Defaut Searching will be on Any Type of Vaccine
-- Added Feature of Searching for VaccinationFee Type; By Default Free Vaccination Centres are search; Can be search for Free/Paid/Both
-- Fixed minor bugs; improved UX</PackageReleaseNotes>
+    <PackageReleaseNotes>1. Cross-Platform Software - now runs on Windows, Linux, MacOS
+2. Telemetry &amp; Performance Improvements
+3. Auto Handling of IP Throttling Issue Gracefully for better UX
+</PackageReleaseNotes>
+    <FileVersion>5.0.0.0</FileVersion>
+    <AssemblyVersion>5.0.0.0</AssemblyVersion>
+    <UserSecretsId>107ac8ef-23d4-4f38-8773-00d3c45adaa5</UserSecretsId>
+    <AssemblyName>CoWinVaccineSlotFinder</AssemblyName>
   </PropertyGroup>
 
   <ItemGroup>
@@ -52,6 +55,8 @@
     <PackageReference Include="RestSharp" Version="106.11.7" />
     <PackageReference Include="Svg" Version="3.2.3" />
     <PackageReference Include="System.Configuration.ConfigurationManager" Version="5.0.0" />
+    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="6.11.0" />
+    <PackageReference Include="Telegram.Bot" Version="15.7.1" />
   </ItemGroup>
 
   <ItemGroup>

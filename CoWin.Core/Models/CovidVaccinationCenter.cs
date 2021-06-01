@@ -9,31 +9,52 @@ using CoWin.Auth;
 using Newtonsoft.Json;
 using System.Web;
 using System.Collections.Specialized;
+using CoWin.Core.Models;
+using System.Diagnostics;
+using System.Linq;
+using System.Threading;
+using System.Globalization;
 
 namespace CoWiN.Models
 {
     public class CovidVaccinationCenter
     {
         private readonly IConfiguration _configuration;
-        public static bool IS_BOOKING_SUCCESSFUL = false;        
+        private readonly List<string> beneficiaries = new List<string>();
+        private readonly List<string> _vaccinationCentresToSearch;
+        public static bool IS_BOOKING_SUCCESSFUL = false;
+        private bool isIPThrottled = false;
 
-        public CovidVaccinationCenter(IConfiguration configuration)
+        public CovidVaccinationCenter(IConfiguration configuration, List<string> vaccinationCentresToSearch)
         {
             _configuration = configuration;
+            _vaccinationCentresToSearch = vaccinationCentresToSearch;
         }
 
         public void GetSlotsByDistrictId(string districtId, string searchDate, string vaccineType)
         {
             IRestResponse response = FetchAllSlotsForDistict(districtId, searchDate, vaccineType);
-            if(response.StatusCode == HttpStatusCode.OK)
+            if (response.StatusCode == HttpStatusCode.OK)
             {
                 var covidVaccinationCenters = JsonConvert.DeserializeObject<CovidVaccinationCenters>(response.Content);
                 GetAvailableSlots(covidVaccinationCenters);
+            }
+            else if (response.StatusCode == HttpStatusCode.Forbidden || response.StatusCode == HttpStatusCode.TooManyRequests)
+            {
+                isIPThrottled = false;
+                new Thread(new ThreadStart(IPThrolledNotifier)).Start();
+                Console.ForegroundColor = ConsoleColor.DarkRed;
+                Console.WriteLine($"[FATAL] Response From Server: Too many hits from your IP address, hence request has been blocked. You can try following options :\n1.(By Default) Wait for {_configuration["CoWinAPI:ThrottlingRefreshTimeInSeconds"]} seconds, the Application will Automatically resume working.\n2.Switch to a different network which will change your current IP address.\n3.Close the application and try again after sometime");
+                Console.ResetColor();
+                Console.WriteLine($"[INFO] If you want to change the duration of refresh time, you can increase/decrease the value of ThrottlingRefreshTimeInSeconds in Config file and restart the Application");
+                Thread.Sleep(Convert.ToInt32(_configuration["CoWinAPI:ThrottlingRefreshTimeInSeconds"]) * 1000);
+                isIPThrottled = true;
             }
             else if (response.StatusCode == HttpStatusCode.Unauthorized)
             {
                 Console.ForegroundColor = ConsoleColor.Yellow;
                 Console.WriteLine($"[WARNING] Session Expired : Regenerating Auth Token");
+                Console.ResetColor();
                 new OTPAuthenticator(_configuration).ValidateUser();
             }
             else
@@ -52,10 +73,22 @@ namespace CoWiN.Models
                 var covidVaccinationCenters = JsonConvert.DeserializeObject<CovidVaccinationCenters>(response.Content);
                 GetAvailableSlots(covidVaccinationCenters);
             }
+            else if (response.StatusCode == HttpStatusCode.Forbidden || response.StatusCode == HttpStatusCode.TooManyRequests)
+            {
+                isIPThrottled = false;
+                new Thread(new ThreadStart(IPThrolledNotifier)).Start();
+                Console.ForegroundColor = ConsoleColor.DarkRed;
+                Console.WriteLine($"[FATAL] Response From Server: Too many hits from your IP address, hence request has been blocked. You can try following options :\n1.(By Default) Wait for {_configuration["CoWinAPI:ThrottlingRefreshTimeInSeconds"]} seconds, the Application will Automatically resume working.\n2.Switch to a different network which will change your current IP address.\n3.Close the application and try again after sometime");
+                Console.ResetColor();
+                Console.WriteLine($"[INFO] If you want to change the duration of refresh time, you can increase/decrease the value of ThrottlingRefreshTimeInSeconds in Config file and restart the Application");
+                Thread.Sleep(Convert.ToInt32(_configuration["CoWinAPI:ThrottlingRefreshTimeInSeconds"]) * 1000);
+                isIPThrottled = true;
+            }
             else if (response.StatusCode == HttpStatusCode.Unauthorized)
             {
                 Console.ForegroundColor = ConsoleColor.Yellow;
                 Console.WriteLine($"[WARNING] Session Expired : Regenerating Auth Token");
+                Console.ResetColor();
                 new OTPAuthenticator(_configuration).ValidateUser();
             }
             else
@@ -75,7 +108,8 @@ namespace CoWiN.Models
                 builder = new UriBuilder(_configuration["CoWinAPI:ProtectedAPI:FetchCalenderByDistrictUrl"]);
                 queryString = HttpUtility.ParseQueryString(builder.Query);
 
-                if (!string.IsNullOrEmpty(vaccineType)){
+                if (!string.IsNullOrEmpty(vaccineType))
+                {
                     queryString["vaccine"] = vaccineType;
                 }
             }
@@ -129,62 +163,173 @@ namespace CoWiN.Models
 
         private void GetAvailableSlots(CovidVaccinationCenters covidVaccinationCenters)
         {
-            string captcha = ""; 
-            foreach (var cvc in covidVaccinationCenters.Centers)
+            List<Center> vaccinationCentres = covidVaccinationCenters.Centers;
+            if (_vaccinationCentresToSearch.Count != 0 && Convert.ToBoolean(_configuration["CoWinAPI:IsSearchToBeDoneForVaccinationCentreName"]) == true)
             {
-                foreach (var session in cvc?.Sessions)
-                {
-                    if (IsFiltrationCriteraSatisfied(cvc, session))
-                    {
-                        DisplaySlotInfo(cvc, session);
+                vaccinationCentres = covidVaccinationCenters.Centers.Where(x => _vaccinationCentresToSearch.Any(centrename => centrename == x.Name.ToUpper().Trim())).ToList();
+            }
 
-                        foreach (var slot in session.Slots)
+            if (vaccinationCentres.Count == 0)
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"[WARNING] Sorry! No Vaccination Centers available for your search criteria");
+                Console.ResetColor();
+                return;
+            }
+
+            foreach (var cvc in vaccinationCentres)
+            {
+                foreach (var session in cvc.Sessions)
+                {
+                    if (IsFiltrationCriteriaSatisfied(cvc, session))
+                    {
+                        if (session.Slots.Count > 0)
                         {
+                            Console.ForegroundColor = ConsoleColor.Green;
+                            Console.WriteLine($"[INFO] HURRAY! Slots Available for search criteria: Age {_configuration["CoWinAPI:MinAgeLimit"]}-{_configuration["CoWinAPI:MaxAgeLimit"]} - PIN: {cvc.Pincode} - District: {cvc.DistrictName} - Date: {session.Date} - Center : {cvc.Name}");
+                            Console.ResetColor();
+                            DisplaySlotInfo(cvc, session);
+                        }
+
+                        // Processing of Slot Booking in Reverse Order so that chances are higher to get the slot
+                        for (int i = session.Slots.Count - 1; i >= 0; i--)
+                        {
+                            var stopwatch = new Stopwatch();
+                            stopwatch.Start();
+
                             Console.ResetColor();
                             Console.ForegroundColor = ConsoleColor.Yellow;
-                            Console.WriteLine($"Trying to Book Appointment for CVC: {cvc.Name} - PIN: {cvc.Pincode} - District: {cvc.DistrictName} - Date: {session.Date} - Slot: {slot}");
+                            Console.WriteLine($"[INFO] Trying to Book Appointment for CVC: {cvc.Name} - PIN: {cvc.Pincode} - District: {cvc.DistrictName} - Date: {session.Date} - Slot: {session.Slots[i]}");
                             Console.ResetColor();
 
-                            captcha = new Captcha(_configuration).GetCurrentCaptchaDetails();
-
-                            IS_BOOKING_SUCCESSFUL = BookAvailableSlot(session.SessionId, slot, captcha);
+                            string captcha = new Captcha(_configuration).GetCurrentCaptchaDetails();
+                            IS_BOOKING_SUCCESSFUL = BookAvailableSlot(session.SessionId, session.Slots[i], captcha);
 
                             if (IS_BOOKING_SUCCESSFUL == true)
                             {
+                                stopwatch.Stop();
+                                TimeSpan ts = stopwatch.Elapsed;
+                                var captchaMode = Convert.ToBoolean(_configuration["CoWinAPI:Auth:AutoReadCaptcha"]) == true ? "AI AutoCaptcha" : "Manual Captcha";
+                                var bookDate = DateTime.Now.ToString("dd-MM-yyyy HH:mm:ss");
+                                var appVersion = new VersionChecker(_configuration).GetCurrentVersionFromSystem();
+                                var uniqueId = Guid.NewGuid();
+                                var timeTakenToBook = ts.TotalSeconds;
+                                var source = System.Runtime.InteropServices.OSPlatform.Windows.ToString();
+
+                                var telemetryModel = new TelemetryModel
+                                {
+                                    UniqueId = uniqueId,
+                                    AppVersion = appVersion.ToString().Trim(),
+                                    Source = source.Trim(),
+                                    BookedOn = DateTime.ParseExact(bookDate, "dd-MM-yyyy HH:mm:ss", new CultureInfo("en-US")),
+                                    TimeTakenToBookInSeconds = timeTakenToBook,
+                                    CaptchaMode = captchaMode.Trim(),
+                                    Latitude = Convert.ToInt32(cvc.Lat),
+                                    Longitude = Convert.ToInt32(cvc.Long),
+                                    PINCode = Convert.ToInt32(cvc.Pincode),
+                                    District = cvc.DistrictName.Trim(),
+                                    State = cvc.StateName.Trim(),
+                                    BeneficiaryCount = beneficiaries.Count,
+                                    MinimumAge = Convert.ToInt32(_configuration["CoWinAPI:MinAgeLimit"]),
+                                    MaximumAge = Convert.ToInt32(_configuration["CoWinAPI:MaxAgeLimit"]),
+                                };
+
+                                var telemetryMetadata = JsonConvert.SerializeObject(telemetryModel);
+
+                                new Telemetry(_configuration).SendStatistics(telemetryMetadata);
+
+                                new Notifier().Notify($"*SLOT BOOKED SUCCESSFULLY +1* \n\n" +
+                                                      $"*LocalAppVersion* : `{ appVersion }`\n" +
+                                                      $"*BookedOn* : `{ bookDate }`\n" +
+                                                      $"*TimeTakenToBook* : `{ timeTakenToBook } seconds`\n" +
+                                                      $"*CaptchaMode* : `{captchaMode}`\n" +
+                                                      $"*Latitude* : `{ cvc.Lat}`\n" +
+                                                      $"*Longitude* : `{ cvc.Long}`\n" +
+                                                      $"*PINCode* : `{cvc.Pincode}`\n" +
+                                                      $"*District* : `{ cvc.DistrictName}`\n" +
+                                                      $"*State* : `{ cvc.StateName}`\n" +
+                                                      $"*BeneficiaryCount* : `{ beneficiaries.Count}`\n" +
+                                                      $"*AgeGroup* : `{_configuration["CoWinAPI:MinAgeLimit"]} - {_configuration["CoWinAPI:MaxAgeLimit"]}`\n" +
+                                                      $"*Source* : `{ source }`\n" +
+                                                      $"*UniqueId* : `{ uniqueId }`\n");
                                 return;
                             }
-
+                            stopwatch.Stop();
                         }
 
                     }
-                }
+                    else
+                    {
+                        Console.WriteLine($"[INFO] Sorry! No Slots Available for search criteria: Age {_configuration["CoWinAPI:MinAgeLimit"]}-{_configuration["CoWinAPI:MaxAgeLimit"]} - PIN: {cvc.Pincode} - District: {cvc.DistrictName} - Date: {session.Date} - Center : {cvc.Name}");
+                        Console.ResetColor();
+                    }
+                }                
             }
         }
 
-        private bool IsFiltrationCriteraSatisfied(Center cvc, Session session)
+        private bool IsFiltrationCriteriaSatisfied(Center cvc, Session session)
         {
-            var minimumAgeLimitFilter = (session.MinAgeLimit >= Convert.ToInt16(_configuration["CoWinAPI:MinAgeLimit"]));
-            var maximumAgeLimitFilter = (session.MinAgeLimit < Convert.ToInt16(_configuration["CoWinAPI:MaxAgeLimit"]));
-            var minimumVaccineAvailabiltyFilter = session.AvailableCapacity >= Convert.ToInt16(_configuration["CoWinAPI:MinimumVaccineAvailability"]);
-            
-            var mandatoryFilters = minimumAgeLimitFilter && maximumAgeLimitFilter && minimumVaccineAvailabiltyFilter;
+            bool isAgeCriteriaMet = IsAgeFilterSatisfied(session);
+            if (!isAgeCriteriaMet)
+                return false;
 
-            // Filter Based on VaccineFeeType only when fee type is provided; otherwise don't filter. Keep both Paid and Free Slots
-            var vaccineFeeTypeFilter = string.IsNullOrEmpty(_configuration["CoWinAPI:VaccineFeeType"]) || (cvc.FeeType == _configuration["CoWinAPI:VaccineFeeType"]);
+            bool isVaccineAvailable = IsMinimumVaccineAvailabilityFilterSatisfied(session);
+            if (!isVaccineAvailable)
+                return false;
 
-            // Filter Based on VaccinationCentreName when there are multiple CVCs in one PIN/District but user wants slot in a specific CVC
-            var vaccinationCentreNameWiseFilter = string.IsNullOrEmpty(_configuration["CoWinAPI:VaccinationCentreName"]) || (cvc.Name == _configuration["CoWinAPI:VaccinationCentreName"]);          
-            
-            var optionalFilters = vaccineFeeTypeFilter && vaccinationCentreNameWiseFilter;
-        
+            bool vaccineFeeTypeFilter = IsVacineFeeTypeFilterSatisfied(cvc);
+            if (!vaccineFeeTypeFilter)
+                return false;
+
+            return FilteredResult(isAgeCriteriaMet, isVaccineAvailable, vaccineFeeTypeFilter);
+        }
+
+        private static bool FilteredResult(bool isAgeCriteriaMet, bool isVaccineAvailable, bool vaccineFeeTypeFilter)
+        {
+            var mandatoryFilters = isAgeCriteriaMet && isVaccineAvailable;
+            var optionalFilters = vaccineFeeTypeFilter;
+
             return mandatoryFilters && optionalFilters;
         }
 
-        private static void DisplaySlotInfo(Center cvc, Session session)
+        private bool IsVacineFeeTypeFilterSatisfied(Center cvc)
+        {
+            // Filter Based on VaccineFeeType only when fee type is provided; otherwise don't filter. Keep both Paid and Free Slots
+            return string.IsNullOrEmpty(_configuration["CoWinAPI:VaccineFeeType"]) || (cvc.FeeType.ToUpper() == _configuration["CoWinAPI:VaccineFeeType"].ToUpper().Trim());
+        }
+
+        private bool IsAgeFilterSatisfied(Session session)
+        {
+            bool minimumAgeLimitFilter = (session.MinAgeLimit >= Convert.ToInt16(_configuration["CoWinAPI:MinAgeLimit"]));
+            bool maximumAgeLimitFilter = (session.MinAgeLimit < Convert.ToInt16(_configuration["CoWinAPI:MaxAgeLimit"]));
+            return minimumAgeLimitFilter && maximumAgeLimitFilter;
+        }
+
+        private bool IsMinimumVaccineAvailabilityFilterSatisfied(Session session)
+        {
+            bool minimumVaccineAvailabiltyFilter;
+            var availableVaccines = GetVaccineAvailabiltyForDoseType(session);
+            minimumVaccineAvailabiltyFilter = availableVaccines >= Convert.ToInt16(_configuration["CoWinAPI:MinimumVaccineAvailability"]);
+            return minimumVaccineAvailabiltyFilter;
+        }
+
+        private long GetVaccineAvailabiltyForDoseType(Session session)
+        {
+            if (Convert.ToInt16(_configuration["CoWinAPI:DoseType"]) == (int)DoseTypeModel.FIRSTDOSE)
+            {
+                return session.AvailableCapacityFirstDose;
+            }
+            else
+            {
+                return session.AvailableCapacitySecondDose;
+            }
+        }
+
+        private void DisplaySlotInfo(Center cvc, Session session)
         {
             Console.ResetColor();
             Console.WriteLine("\n***************************************************************************************************************");
-            Console.ForegroundColor = ConsoleColor.Blue;
+            Console.ForegroundColor = ConsoleColor.DarkCyan;
             Console.WriteLine("Name: " + cvc.Name);
             Console.ForegroundColor = ConsoleColor.Gray;
             Console.WriteLine("Address: " + cvc.Address);
@@ -193,9 +338,10 @@ namespace CoWiN.Models
             Console.ResetColor();
             Console.WriteLine("District: " + cvc.DistrictName);
             Console.WriteLine("FeeType: " + cvc.FeeType);
+            Console.WriteLine("DoseType: " + Enum.GetName(typeof(DoseTypeModel), Convert.ToInt16(_configuration["CoWinAPI:MinimumVaccineAvailability"])));
             Console.WriteLine("VaccineType: " + session.Vaccine);
             Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine("AvailableCapacity: " + session.AvailableCapacity);
+            Console.WriteLine("AvailableCapacity: " + GetVaccineAvailabiltyForDoseType(session).ToString());
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine("DateOfAvailability: " + session.Date);
             Console.ResetColor();
@@ -207,8 +353,8 @@ namespace CoWiN.Models
         {
             string endpoint = "";
             bool isBookingSuccessful = false;
-            List<string> beneficiaries = new List<string>();
-            
+            beneficiaries.Clear(); 
+
             if (Convert.ToBoolean(_configuration["CoWinAPI:ProtectedAPI:IsToBeUsed"]))
             {
                 endpoint = _configuration["CoWinAPI:ProtectedAPI:ScheduleAppointmentUrl"];
@@ -227,27 +373,47 @@ namespace CoWiN.Models
 
             IRestResponse response = new APIFacade(_configuration).Post(endpoint, requestBody);
 
-            if(response.StatusCode == HttpStatusCode.OK)
+            if (response.StatusCode == HttpStatusCode.OK)
             {
                 Console.ForegroundColor = ConsoleColor.Green;
                 Console.WriteLine($"[INFO] CONGRATULATIONS! Booking Success - ResponseCode: {response.StatusDescription} ResponseData: {response.Content}");
                 Console.ResetColor();
                 isBookingSuccessful = true;
             }
+            else if (response.StatusCode == HttpStatusCode.Forbidden || response.StatusCode == HttpStatusCode.TooManyRequests)
+            {
+                isIPThrottled = false;
+                new Thread(new ThreadStart(IPThrolledNotifier)).Start();
+                Console.ForegroundColor = ConsoleColor.DarkRed;
+                Console.WriteLine($"[FATAL] Response From Server: Too many hits from your IP address, hence request has been blocked. You can try following options :\n1.(By Default) Wait for {_configuration["CoWinAPI:ThrottlingRefreshTimeInSeconds"]} seconds, the Application will Automatically resume working.\n2.Switch to a different network which will change your current IP address.\n3.Close the application and try again after sometime");
+                Console.ResetColor();
+                Console.WriteLine($"[INFO] If you want to change the duration of refresh time, you can increase/decrease the value of ThrottlingRefreshTimeInSeconds in Config file and restart the Application");
+                Thread.Sleep(Convert.ToInt32(_configuration["CoWinAPI:ThrottlingRefreshTimeInSeconds"]) * 1000);
+                isIPThrottled = true;
+            }
             else if (response.StatusCode == HttpStatusCode.Unauthorized)
             {
                 Console.ForegroundColor = ConsoleColor.Yellow;
                 Console.WriteLine($"[WARNING] Session Expired : Regenerating Auth Token");
+                Console.ResetColor();
                 new OTPAuthenticator(_configuration).ValidateUser();
             }
             else
             {
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine($"[ERROR] BOOKING ERROR Sorry, Booking Failed - ResponseCode: {response.StatusDescription} ResponseData: {response.Content}");
+                Console.ResetColor();
                 isBookingSuccessful = false;
             }
             return isBookingSuccessful;
         }
-
+        private void IPThrolledNotifier()
+        {
+            while (!isIPThrottled)
+            {
+                Console.Beep(); // Default Frequency: 800 Hz, Default Duration of Beep: 200 ms
+                Thread.Sleep(300);
+            }
+        }
     }
 }
